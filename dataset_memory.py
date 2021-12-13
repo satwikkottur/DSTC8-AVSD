@@ -180,7 +180,8 @@ def collate_fn(batch, pad_token, features=None):
             response_mask,
         )
     else:
-        return input_ids, token_type_ids, lm_labels, input_mask
+        response_mask = torch.zeros(input_mask.size())
+        return input_ids, token_type_ids, lm_labels, input_mask, response_mask
 
 
 def pad_dataset(dataset, padding=0):

@@ -86,19 +86,20 @@ def get_data_loaders_new(args, tokenizer):
         drop_rate=0,
         train=False,
     )
+    features = None if args.video_agnostic else True
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.train_batch_size,
-        num_workers=4,
+        num_workers=1,
         shuffle=(not args.distributed),
-        collate_fn=lambda x: collate_fn(x, tokenizer.pad_token_id, features=True),
+        collate_fn=lambda x: collate_fn(x, tokenizer.pad_token_id, features=features),
     )
     valid_loader = DataLoader(
         valid_dataset,
         batch_size=args.valid_batch_size,
-        num_workers=4,
+        num_workers=1,
         shuffle=False,
-        collate_fn=lambda x: collate_fn(x, tokenizer.pad_token_id, features=True),
+        collate_fn=lambda x: collate_fn(x, tokenizer.pad_token_id, features=features),
     )
     return train_loader, valid_loader
 
@@ -158,6 +159,9 @@ def train():
         "--eval_before_start",
         action="store_true",
         help="If true start with a first evaluation before training",
+    )
+    parser.add_argument(
+        "--video_agnostic", action="store_true", help="Ignore video features",
     )
     parser.add_argument(
         "--device",
@@ -227,64 +231,36 @@ def train():
     def update(engine, batch):
         model.train()
         batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
-        (
-            input_ids,
-            token_type_ids,
-            labels,
-            input_mask,
-            i3d,
-            video_mask,
-            reply_mask,
-        ) = batch
-        input_embs = model.transformer.wte(input_ids)
-        video_embs = model.video_ff(i3d)
-        input_embs = torch.cat([video_embs, input_embs], dim=1)
-        token_type_ids = torch.cat(
-            [
-                torch.ones((i3d.size(0), i3d.size(1))).long().cuda()
-                * tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-2]),
-                token_type_ids,
-            ],
-            dim=1,
-        )
-        video_loss = model(
-            input_embs,
-            token_type_ids=token_type_ids,
-            labels=(labels, i3d),
-            attention_mask=[video_mask, input_mask],
-            mode="video",
-        )[0]
-        reply_loss = model(
-            input_embs,
-            token_type_ids=token_type_ids,
-            labels=(labels, i3d),
-            attention_mask=[reply_mask, input_mask],
-            mode="reply",
-        )[0]
-        loss = (video_loss + reply_loss) / args.gradient_accumulation_steps
-        if args.fp16:
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-            torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_norm)
+        if args.video_agnostic:
+            # Run text only version.
+            (input_ids, token_type_ids, labels, input_mask, reply_mask,) = batch
+            input_embs = model.transformer.wte(input_ids)
+            reply_loss = model(
+                input_embs,
+                token_type_ids=token_type_ids,
+                labels=(labels, None),
+                attention_mask=[reply_mask, input_mask],
+                mode="reply",
+            )[0]
+            loss = reply_loss / args.gradient_accumulation_steps
+            if args.fp16:
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    amp.master_params(optimizer), args.max_norm
+                )
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+            if engine.state.iteration % args.gradient_accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+            return loss.item()
         else:
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-        if engine.state.iteration % args.gradient_accumulation_steps == 0:
-            optimizer.step()
-            optimizer.zero_grad()
-        return loss.item()
-
-    trainer = Engine(update)
-
-    # Evaluation function and evaluator (evaluator output is the input of the metrics)
-    def inference(engine, batch):
-        model.eval()
-        with torch.no_grad():
-            batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
             (
                 input_ids,
                 token_type_ids,
-                lm_labels,
+                labels,
                 input_mask,
                 i3d,
                 video_mask,
@@ -301,18 +277,90 @@ def train():
                 ],
                 dim=1,
             )
-            model_outputs = model(
+            video_loss = model(
                 input_embs,
                 token_type_ids=token_type_ids,
-                attention_mask=[reply_mask, input_mask],
+                labels=(labels, i3d),
+                attention_mask=[video_mask, input_mask],
+                mode="video",
             )[0]
+            reply_loss = model(
+                input_embs,
+                token_type_ids=token_type_ids,
+                labels=(labels, i3d),
+                attention_mask=[reply_mask, input_mask],
+                mode="reply",
+            )[0]
+            loss = (video_loss + reply_loss) / args.gradient_accumulation_steps
+            if args.fp16:
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    amp.master_params(optimizer), args.max_norm
+                )
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+            if engine.state.iteration % args.gradient_accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+            return loss.item()
 
-            lm_logits = model_outputs  # So we can also use GPT2 outputs
-            lm_logits_flat_shifted = (
-                lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
-            )
-            lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
-            return lm_logits_flat_shifted, lm_labels_flat_shifted
+    trainer = Engine(update)
+
+    # Evaluation function and evaluator (evaluator output is the input of the metrics)
+    def inference(engine, batch):
+        model.eval()
+        with torch.no_grad():
+            batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
+            if args.video_agnostic:
+                (input_ids, token_type_ids, lm_labels, input_mask, reply_mask,) = batch
+                input_embs = model.transformer.wte(input_ids)
+                model_outputs = model(
+                    input_embs,
+                    token_type_ids=token_type_ids,
+                    attention_mask=[reply_mask, input_mask],
+                )[0]
+
+                lm_logits = model_outputs  # So we can also use GPT2 outputs
+                lm_logits_flat_shifted = (
+                    lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
+                )
+                lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
+                return lm_logits_flat_shifted, lm_labels_flat_shifted
+            else:
+                (
+                    input_ids,
+                    token_type_ids,
+                    lm_labels,
+                    input_mask,
+                    i3d,
+                    video_mask,
+                    reply_mask,
+                ) = batch
+                input_embs = model.transformer.wte(input_ids)
+                video_embs = model.video_ff(i3d)
+                input_embs = torch.cat([video_embs, input_embs], dim=1)
+                token_type_ids = torch.cat(
+                    [
+                        torch.ones((i3d.size(0), i3d.size(1))).long().cuda()
+                        * tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-2]),
+                        token_type_ids,
+                    ],
+                    dim=1,
+                )
+                model_outputs = model(
+                    input_embs,
+                    token_type_ids=token_type_ids,
+                    attention_mask=[reply_mask, input_mask],
+                )[0]
+
+                lm_logits = model_outputs  # So we can also use GPT2 outputs
+                lm_logits_flat_shifted = (
+                    lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
+                )
+                lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
+                return lm_logits_flat_shifted, lm_labels_flat_shifted
 
     evaluator = Engine(inference)
 
