@@ -5,15 +5,16 @@ Author(s): noctli, skottur
 """
 
 import json
-import pickle
 import logging
+import pickle
+from itertools import chain
+
 import numpy as np
 import torch
 import torch.utils.data
-from torch.utils.data import Dataset
-from itertools import chain
 
 from dataset import tokenize
+from torch.utils.data import Dataset
 
 
 # from train import SPECIAL_TOKENS, MODEL_INPUTS, PADDED_INPUTS
@@ -29,8 +30,7 @@ PADDED_INPUTS = ["input_ids", "token_type_ids", "lm_labels"]
 
 
 def get_dataset(tokenizer, data_file, feature_path=None, n_history=3):
-    """Get dataset given tokenizer and data file.
-    """
+    """Get dataset given tokenizer and data file."""
     with open(data_file, "r") as file_id:
         dialog_data = json.load(file_id)
 
@@ -185,8 +185,8 @@ def collate_fn(batch, pad_token, features=None):
 
 
 def pad_dataset(dataset, padding=0):
-    """ Pad the dataset.
-    This could be optimized by defining a Dataset class and pad only 
+    """Pad the dataset.
+    This could be optimized by defining a Dataset class and pad only
     batches but this is simpler.
     """
     max_l = max(len(x) for x in dataset["input_ids"])
@@ -201,7 +201,7 @@ def pad_dataset(dataset, padding=0):
 def build_input_from_segments(
     history, response, tokenizer, with_eos=True, video=False, train=True
 ):
-    """ Build a sequence of input from 2 segments: history and last response """
+    """Build a sequence of input from 2 segments: history and last response"""
     bos, eos, user, system = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:-2])
     instance = {}
     sequence = history + [response + ([eos] if with_eos else [])]

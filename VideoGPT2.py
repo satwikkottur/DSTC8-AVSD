@@ -153,7 +153,6 @@ class Block(nn.Module):
 
 
 class VideoGPT2Model(GPT2Model):
-
     def __init__(self, config):
         super(VideoGPT2Model, self).__init__(config)
         self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])

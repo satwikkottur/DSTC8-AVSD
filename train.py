@@ -1,30 +1,30 @@
 # Copyright (c) 2019-present, HuggingFace Inc.
 # All rights reserved. This source code is licensed under the BSD-style license found in the LICENSE file in the root directory of this source tree.
-import os
-import math
 import logging
-from pprint import pformat
+import math
+import os
 from argparse import ArgumentParser
 from collections import defaultdict
 from itertools import chain
+from pprint import pformat
 
 import torch
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, TensorDataset
+from ignite.contrib.handlers import PiecewiseLinear, ProgressBar
+from ignite.contrib.handlers.tensorboard_logger import (
+    OptimizerParamsHandler,
+    OutputHandler,
+    TensorboardLogger,
+)
 from ignite.engine import Engine, Events
 from ignite.handlers import ModelCheckpoint
 from ignite.metrics import Accuracy, Loss, MetricsLambda, RunningAverage
-from ignite.contrib.handlers import ProgressBar, PiecewiseLinear
-from ignite.contrib.handlers.tensorboard_logger import (
-    TensorboardLogger,
-    OutputHandler,
-    OptimizerParamsHandler,
-)
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import DataLoader, TensorDataset
 from transformers import *
 from VideoGPT2 import *
 import pickle as pkl
 
-from dataset_memory import get_dataset, MemoryDialogDataset, collate_fn
+from dataset_memory import collate_fn, get_dataset, MemoryDialogDataset
 
 SPECIAL_TOKENS = [
     "<bos>",
@@ -48,7 +48,7 @@ logger = logging.getLogger(__file__)
 
 
 def average_distributed_scalar(scalar, args):
-    """ Average a scalar over the nodes if we are in distributed training. We use this for distributed evaluation. """
+    """Average a scalar over the nodes if we are in distributed training. We use this for distributed evaluation."""
     if args.local_rank == -1:
         return scalar
     scalar_t = (
@@ -161,7 +161,9 @@ def train():
         help="If true start with a first evaluation before training",
     )
     parser.add_argument(
-        "--video_agnostic", action="store_true", help="Ignore video features",
+        "--video_agnostic",
+        action="store_true",
+        help="Ignore video features",
     )
     parser.add_argument(
         "--device",
@@ -233,7 +235,13 @@ def train():
         batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
         if args.video_agnostic:
             # Run text only version.
-            (input_ids, token_type_ids, labels, input_mask, reply_mask,) = batch
+            (
+                input_ids,
+                token_type_ids,
+                labels,
+                input_mask,
+                reply_mask,
+            ) = batch
             input_embs = model.transformer.wte(input_ids)
             reply_loss = model(
                 input_embs,
@@ -314,7 +322,13 @@ def train():
         with torch.no_grad():
             batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
             if args.video_agnostic:
-                (input_ids, token_type_ids, lm_labels, input_mask, reply_mask,) = batch
+                (
+                    input_ids,
+                    token_type_ids,
+                    lm_labels,
+                    input_mask,
+                    reply_mask,
+                ) = batch
                 input_embs = model.transformer.wte(input_ids)
                 model_outputs = model(
                     input_embs,
