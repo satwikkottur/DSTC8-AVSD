@@ -29,7 +29,7 @@ MODEL_INPUTS = ["input_ids", "token_type_ids", "lm_labels"]
 PADDED_INPUTS = ["input_ids", "token_type_ids", "lm_labels"]
 
 
-def get_dataset(tokenizer, data_file, feature_path=None, n_history=3):
+def get_dataset(tokenizer, data_file, feature_path=None, n_history=3, predict_belief_state=False):
     """Get dataset given tokenizer and data file."""
     with open(data_file, "r") as file_id:
         dialog_data = json.load(file_id)

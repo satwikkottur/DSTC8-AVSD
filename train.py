@@ -61,13 +61,21 @@ def average_distributed_scalar(scalar, args):
 
 def get_data_loaders_new(args, tokenizer):
     train_data = get_dataset(
-        tokenizer, args.train_path, args.fea_path, n_history=args.max_history
+        tokenizer,
+        args.train_path,
+        args.feature_path,
+        n_history=args.max_history,
+        predict_belief_state=args.predict_belief_state,
     )
     # with open("train_data_gpt2.pkl", "rb") as f:
     #    train_data = pkl.load(f)
     # pkl.dump(train_data, f)
     valid_data = get_dataset(
-        tokenizer, args.valid_path, args.fea_path, n_history=args.max_history
+        tokenizer,
+        args.valid_path,
+        args.feature_path,
+        n_history=args.max_history,
+        predict_belief_state=args.predict_belief_state,
     )
     # with open("valid_data_gpt2.pkl", "rb") as f:
     #    valid_data = pkl.load(f)
@@ -113,7 +121,7 @@ def train():
         help="Path of the trainset",
     )
     parser.add_argument(
-        "--fea_path", type=str, default="data/", help="Path of the trainset"
+        "--feature_path", type=str, default="data/", help="Path to features"
     )
     parser.add_argument(
         "--valid_path",
@@ -164,6 +172,9 @@ def train():
         "--video_agnostic",
         action="store_true",
         help="Ignore video features",
+    )
+    parser.add_argument(
+        "--predict_belief_state", action="store_true", help="Predict belief state"
     )
     parser.add_argument(
         "--device",

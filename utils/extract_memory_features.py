@@ -139,12 +139,12 @@ def main(args):
             if ii["memory_id"] in datum["mentioned_memory_ids"]:
                 sample_memories[ii["memory_id"]] = ii
         for mem_id, mem_datum in sample_memories.items():
-            relevant_image_ids.add(mem_datum["media"][0]["media_id"])
+            relevant_image_ids.add((mem_id, mem_datum["media"][0]["media_id"]))
 
     progress_bar = tqdm.tqdm(relevant_image_ids, desc="Extracting features")
-    for image_id in progress_bar:
+    for memory_id, image_id in progress_bar:
         feature_save_path = os.path.join(
-            args["feature_save_path"], f"mscoco_butd_{image_id}.npy"
+            args["feature_save_path"], f"mscoco_butd_{memory_id}.npy"
         )
         memory_feature = coco_features[image_id]
         np.save(feature_save_path, memory_feature)
