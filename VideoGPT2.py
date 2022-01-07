@@ -1,12 +1,18 @@
 from transformers import *
 import math
+
 import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss, MSELoss
 
 
 def gelu(x):
-    return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+    return (
+        0.5
+        * x
+        * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+    )
+
 
 class Attention(nn.Module):
     def __init__(self, nx, n_ctx, config, scale=False):
@@ -16,7 +22,9 @@ class Attention(nn.Module):
         n_state = nx  # in Attention: n_state=768 (nx=n_embd)
         # [switch nx => n_state from Block to Attention to keep identical to TF implem]
         assert n_state % config.n_head == 0
-        self.register_buffer("bias", torch.tril(torch.ones(n_ctx, n_ctx)).view(1, 1, n_ctx, n_ctx))
+        self.register_buffer(
+            "bias", torch.tril(torch.ones(n_ctx, n_ctx)).view(1, 1, n_ctx, n_ctx)
+        )
         self.n_head = config.n_head
         self.split_size = n_state
         self.scale = scale
@@ -31,14 +39,18 @@ class Attention(nn.Module):
         if len(heads) == 0:
             return
         mask = torch.ones(self.n_head, self.split_size // self.n_head)
-        heads = set(heads) - self.pruned_heads  # Convert to set and emove already pruned heads
+        heads = (
+            set(heads) - self.pruned_heads
+        )  # Convert to set and emove already pruned heads
         for head in heads:
             # Compute how many pruned heads are before the head and move the index accordingly
             head = head - sum(1 if h < head else 0 for h in self.pruned_heads)
             mask[head] = 0
         mask = mask.view(-1).contiguous().eq(1)
         index = torch.arange(len(mask))[mask].long()
-        index_attn = torch.cat([index, index + self.split_size, index + (2*self.split_size)])
+        index_attn = torch.cat(
+            [index, index + self.split_size, index + (2 * self.split_size)]
+        )
 
         # Prune conv1d layers
         self.c_attn = prune_conv1d_layer(self.c_attn, index_attn, dim=1)
@@ -54,8 +66,8 @@ class Attention(nn.Module):
         if self.scale:
             w = w / math.sqrt(v.size(-1))
         nd, ns = w.size(-2), w.size(-1)
-        b = self.bias[:, :, ns-nd:ns, :ns]
-        #w = w * b - 1e18 * (1 - b)
+        b = self.bias[:, :, ns - nd : ns, :ns]
+        # w = w * b - 1e18 * (1 - b)
 
         if attention_mask is not None:
             # Apply the attention mask
@@ -97,10 +109,15 @@ class Attention(nn.Module):
         key = self.split_heads(key, k=True)
         value = self.split_heads(value)
         if layer_past is not None:
-            past_key, past_value = layer_past[0].transpose(-2, -1), layer_past[1]  # transpose back cf below
+            past_key, past_value = (
+                layer_past[0].transpose(-2, -1),
+                layer_past[1],
+            )  # transpose back cf below
             key = torch.cat((past_key, key), dim=-1)
             value = torch.cat((past_value, value), dim=-2)
-        present = torch.stack((key.transpose(-2, -1), value))  # transpose to have same shapes for stacking
+        present = torch.stack(
+            (key.transpose(-2, -1), value)
+        )  # transpose to have same shapes for stacking
 
         attn_outputs = self._attn(query, key, value, attention_mask, head_mask)
         a = attn_outputs[0]
@@ -138,10 +155,12 @@ class Block(nn.Module):
         self.mlp = MLP(4 * nx, config)
 
     def forward(self, x, layer_past=None, attention_mask=None, head_mask=None):
-        output_attn = self.attn(self.ln_1(x),
-                                layer_past=layer_past,
-                                attention_mask=attention_mask,
-                                head_mask=head_mask)
+        output_attn = self.attn(
+            self.ln_1(x),
+            layer_past=layer_past,
+            attention_mask=attention_mask,
+            head_mask=head_mask,
+        )
         a = output_attn[0]  # output_attn: a, present, (attentions)
 
         x = x + a
@@ -155,16 +174,31 @@ class Block(nn.Module):
 class VideoGPT2Model(GPT2Model):
     def __init__(self, config):
         super(VideoGPT2Model, self).__init__(config)
-        self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
-        
-    def forward(self, input_embs, past=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None):
+        self.h = nn.ModuleList(
+            [Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)]
+        )
+
+    def forward(
+        self,
+        input_embs,
+        past=None,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+    ):
         if past is None:
             past_length = 0
             past = [None] * len(self.h)
         else:
             past_length = past[0][0].size(-2)
         if position_ids is None:
-            position_ids = torch.arange(past_length, input_embs.size(-2) + past_length, dtype=torch.long, device=input_embs.device)
+            position_ids = torch.arange(
+                past_length,
+                input_embs.size(-2) + past_length,
+                dtype=torch.long,
+                device=input_embs.device,
+            )
             position_ids = position_ids.unsqueeze(0).expand_as(input_embs[:, :, 0])
 
         # Attention mask.
@@ -182,9 +216,13 @@ class VideoGPT2Model(GPT2Model):
             # positions we want to attend and -10000.0 for masked positions.
             # Since we are adding it to the raw scores before the softmax, this is
             # effectively the same as removing these entirely.
-            attention_mask[0] = attention_mask[0].to(dtype=next(self.parameters()).dtype) # fp16 compatibility
-            attention_mask[1] = attention_mask[1].to(dtype=next(self.parameters()).dtype) # fp16 compatibility
-            #attention_mask = (1.0 - attention_mask) * -1e18
+            attention_mask[0] = attention_mask[0].to(
+                dtype=next(self.parameters()).dtype
+            )  # fp16 compatibility
+            attention_mask[1] = attention_mask[1].to(
+                dtype=next(self.parameters()).dtype
+            )  # fp16 compatibility
+            # attention_mask = (1.0 - attention_mask) * -1e18
 
         # Prepare head mask if needed
         # 1.0 in head_mask indicate we keep the head
@@ -192,11 +230,17 @@ class VideoGPT2Model(GPT2Model):
         # head_mask has shape n_layer x batch x n_heads x N x N
         if head_mask is not None:
             if head_mask.dim() == 1:
-                head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+                head_mask = (
+                    head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+                )
                 head_mask = head_mask.expand(self.config.n_layer, -1, -1, -1, -1)
             elif head_mask.dim() == 2:
-                head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # We can specify head_mask for each layer
-            head_mask = head_mask.to(dtype=next(self.parameters()).dtype) # switch to fload if need + fp16 compatibility
+                head_mask = (
+                    head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+                )  # We can specify head_mask for each layer
+            head_mask = head_mask.to(
+                dtype=next(self.parameters()).dtype
+            )  # switch to fload if need + fp16 compatibility
         else:
             head_mask = [None] * self.config.n_layer
 
@@ -222,12 +266,16 @@ class VideoGPT2Model(GPT2Model):
         all_hidden_states = ()
         for i, (block, layer_past) in enumerate(zip(self.h, past)):
             if self.output_hidden_states:
-                all_hidden_states = all_hidden_states + (hidden_states.view(*output_shape),)
+                all_hidden_states = all_hidden_states + (
+                    hidden_states.view(*output_shape),
+                )
 
-            outputs = block(hidden_states,
-                            layer_past=layer_past,
-                            attention_mask=attention_mask,
-                            head_mask=head_mask[i])
+            outputs = block(
+                hidden_states,
+                layer_past=layer_past,
+                attention_mask=attention_mask,
+                head_mask=head_mask[i],
+            )
 
             hidden_states, present = outputs[:2]
             presents = presents + (present,)
@@ -247,8 +295,12 @@ class VideoGPT2Model(GPT2Model):
             outputs = outputs + (all_hidden_states,)
         if self.output_attentions:
             # let the number of heads free (-1) so we can extract attention even after head pruning
-            attention_output_shape = input_shape[:-1] + (-1,) + all_attentions[0].shape[-2:]
-            all_attentions = tuple(t.view(*attention_output_shape) for t in all_attentions)
+            attention_output_shape = (
+                input_shape[:-1] + (-1,) + all_attentions[0].shape[-2:]
+            )
+            all_attentions = tuple(
+                t.view(*attention_output_shape) for t in all_attentions
+            )
             outputs = outputs + (all_attentions,)
         return outputs  # last hidden state, presents, (all hidden_states), (attentions)
 
@@ -258,28 +310,37 @@ class VideoGPT2LMHeadModel(GPT2PreTrainedModel):
         super(VideoGPT2LMHeadModel, self).__init__(config)
         self.transformer = VideoGPT2Model(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.video_ff = nn.Linear(4224, config.n_embd)
-        self.video_inverse_ff = nn.Linear(config.n_embd, 4224)
+        self.video_ff = nn.Linear(2053, config.n_embd)
+        self.video_inverse_ff = nn.Linear(config.n_embd, 2053)
 
         self.init_weights()
         self.tie_weights()
 
     def tie_weights(self):
-        """ Make sure we are sharing the input and output embeddings.
-            Export to TorchScript can't handle parameter sharing so we are cloning them instead.
+        """Make sure we are sharing the input and output embeddings.
+        Export to TorchScript can't handle parameter sharing so we are cloning them instead.
         """
-        self._tie_or_clone_weights(self.lm_head,
-                                   self.transformer.wte)
+        self._tie_or_clone_weights(self.lm_head, self.transformer.wte)
 
-
-    def forward(self, input_embs, past=None, attention_mask=None, token_type_ids=None, position_ids=None, head_mask=None,
-                labels=None, mode="reply"):
-        transformer_outputs = self.transformer(input_embs,
-                                               past=past,
-                                               attention_mask=attention_mask,
-                                               token_type_ids=token_type_ids,
-                                               position_ids=position_ids,
-                                               head_mask=head_mask)
+    def forward(
+        self,
+        input_embs,
+        past=None,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        labels=None,
+        mode="reply",
+    ):
+        transformer_outputs = self.transformer(
+            input_embs,
+            past=past,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+        )
         hidden_states = transformer_outputs[0]
 
         lm_logits = self.lm_head(hidden_states)
@@ -292,11 +353,14 @@ class VideoGPT2LMHeadModel(GPT2PreTrainedModel):
                 shift_labels = labels[0][..., 1:].contiguous()
                 # Flatten the tokens
                 loss_text_fct = CrossEntropyLoss(ignore_index=-1)
-                loss_text = loss_text_fct(shift_logits.view(-1, shift_logits.size(-1)),
-                            shift_labels.view(-1))
+                loss_text = loss_text_fct(
+                    shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+                )
                 loss = loss_text
-            else: 
-                lm_video_regs = self.video_inverse_ff(hidden_states[:, :labels[1].size(1), :])
+            else:
+                lm_video_regs = self.video_inverse_ff(
+                    hidden_states[:, : labels[1].size(1), :]
+                )
                 shift_video_regs = lm_video_regs[..., :-1, :].contiguous()
                 shift_video_labels = labels[1][..., :-1, :].contiguous()
                 loss_video_fct = MSELoss(reduce=True, size_average=True)

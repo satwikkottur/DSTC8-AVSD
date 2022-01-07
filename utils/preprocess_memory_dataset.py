@@ -12,14 +12,13 @@ import json
 import os
 
 
-START_MM_CONTEXT = "<SOM>"
-END_MM_CONTEXT = "<EOM>"
+MM_CONTEXT = "<MM>"
 START_API_CALL = "<SOAC>"
 END_API_CALL = "<EOAC>"
-START_API_RESULT = "<SOAR"
-END_API_RESULT = "<EOAR>"
+START_API_RESULT = "<SOAR>"
 START_RESPONSE = "<SOR>"
 END_SENTENCE = "<EOS>"
+PAD_TOKEN = "<PAD>"
 SYSTEM = "<SYSTEM>"
 USER = "<USER>"
 
@@ -28,7 +27,7 @@ TEMPLATE_API_PREDICT = "{context} {START_API_CALL} "
 TEMPLATE_API_TARGET = "{belief_state} {END_API_CALL}"
 TEMPLATE_RESPONSE_PREDICT = (
     "{context} {START_API_CALL} {belief_state} {END_API_CALL} "
-    "{api_result} {END_API_RESULT}"
+    "{START_API_RESULT} {api_result} {START_RESPONSE}"
 )
 TEMPLATE_RESPONSE_TARGET = "{response} {END_SENTENCE}"
 
@@ -48,9 +47,7 @@ def format_memory_dialog_json(json_path, context_length=2, train=False):
                 END_API_CALL,
                 START_RESPONSE,
                 START_API_RESULT,
-                END_API_RESULT,
-                START_MM_CONTEXT,
-                END_MM_CONTEXT,
+                MM_CONTEXT,
             ]
         )
 
@@ -152,8 +149,9 @@ def format_memory_dialog_json(json_path, context_length=2, train=False):
                 START_API_CALL=START_API_CALL,
                 belief_state=str_belief_state,
                 END_API_CALL=END_API_CALL,
+                START_API_RESULT=START_API_RESULT,
                 api_result=str_api_result,
-                END_API_RESULT=END_API_RESULT,
+                START_RESPONSE=START_RESPONSE,
             )
             response_target = TEMPLATE_RESPONSE_TARGET.format(
                 response=asst_uttr, END_SENTENCE=END_SENTENCE
@@ -169,7 +167,7 @@ def format_memory_dialog_json(json_path, context_length=2, train=False):
             )
 
     if train:
-        special_tokens = {"eos_token": END_SENTENCE}
+        special_tokens = {"eos_token": END_SENTENCE, "pad_token": PAD_TOKEN}
         special_tokens["additional_special_tokens"] = list(additional_special_tokens)
     else:
         special_tokens = None
@@ -242,7 +240,7 @@ def format_api_result(user_uttr_api_result):
 def represent_memory_objects(object_ids):
     # Stringify visual objects (JSON)
     str_objects = ", ".join([f"{oo}<MM_BREAK>" for oo in object_ids])
-    return f"{START_MM_CONTEXT} {str_objects} {END_MM_CONTEXT}"
+    return f"{MM_CONTEXT} {str_objects}"
 
 
 def main(args):

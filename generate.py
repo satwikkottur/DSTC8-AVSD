@@ -14,8 +14,8 @@ import torch.nn.functional as F
 
 from transformers import *
 from VideoGPT2 import *
-from dataset import build_input_from_segments, get_dataset
-from train import SPECIAL_TOKENS, SPECIAL_TOKENS_DICT
+from dataset import build_input_from_segments
+from dataset_memory import get_dataset
 
 
 def top_filtering(
@@ -64,48 +64,64 @@ def top_filtering(
 
 
 def sample_sequence(
-    caption, history, tokenizer, model, args, current_output=None, video=None
+    instance,
+    tokenizer,
+    model,
+    args,
+    feature_map,
+    current_output=None,
 ):
-    special_tokens_ids = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS)
+    special_tokens_ids = tokenizer.convert_tokens_to_ids(["<EOAC>", "<EOS>"])
     if current_output is None:
         current_output = []
-    for i in range(args.max_length):
-        instance, sequence = build_input_from_segments(
-            caption,
-            history,
-            current_output,
-            tokenizer,
-            with_eos=False,
-            drop_caption=False,
-        )
-
-        input_ids = torch.tensor(instance["input_ids"], device=args.device).unsqueeze(0)
-        token_type_ids = torch.tensor(
-            instance["token_type_ids"], device=args.device
-        ).unsqueeze(0)
-        input_embs = model.transformer.wte(input_ids)
-        if video is not None:
-            input_embs = torch.cat([model.video_ff(video), input_embs], dim=1)
-            token_type_ids = torch.cat(
+    context_embeds = None
+    for time_step in range(args.max_length):
+        input_ids = []
+        # For the first time step, work on context_tokens, context_token_types.
+        if context_embeds is None:
+            context_embeds = []
+            for ii in instance["context_tokens"]:
+                if isinstance(ii, list):
+                    context_embeds.append(
+                        model.transformer.wte(torch.Tensor(ii).long().to(args.device))
+                    )
+                else:
+                    memory_features = np.load(
+                        ii["memory_feature_path"], allow_pickle=True
+                    )[()]["features"]
+                    memory_embeds = model.video_ff(
+                        torch.Tensor(memory_features).to(args.device)
+                    )
+                    context_embeds.append(memory_embeds)
+            context_embeds = torch.cat(context_embeds)
+            context_token_type_ids = (
+                torch.Tensor(instance["context_token_types"]).long().to(args.device)
+            )
+            context_embeds = context_embeds.unsqueeze(0)
+            context_token_type_ids = context_token_type_ids.unsqueeze(0)
+        else:
+            new_context_embed = model.transformer.wte(
+                torch.Tensor([current_output[-1]]).long().to(args.device)
+            ).unsqueeze(0)
+            context_embeds = torch.cat([context_embeds, new_context_embed], dim=1)
+            context_token_type_ids = torch.cat(
                 [
-                    torch.ones((1, video.size(1))).long().cuda()
-                    * tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-2]),
-                    token_type_ids,
+                    context_token_type_ids,
+                    context_token_type_ids[0][-1].clone().view(1, -1),
                 ],
                 dim=1,
             )
 
-        logits = model(input_embs, token_type_ids=token_type_ids)
+        logits = model(context_embeds, token_type_ids=context_token_type_ids)
         if "gpt2" == args.model:
             logits = logits[0]
         logits = logits[0, -1, :] / args.temperature
         logits = top_filtering(logits, top_k=args.top_k, top_p=args.top_p)
         probs = F.softmax(logits, dim=-1)
-
         prev = (
             torch.topk(probs, 1)[1] if args.no_sample else torch.multinomial(probs, 1)
         )
-        if i < args.min_length and prev.item() in special_tokens_ids:
+        if (time_step < args.min_length) and prev.item() in special_tokens_ids:
             while prev.item() in special_tokens_ids:
                 prev = torch.multinomial(probs, num_samples=1)
 
@@ -230,66 +246,48 @@ def greedy_decode(
 
 
 # Evaluation routine
-def generate_response(model, data, dataset, args, ref_data=None):
+def generate_response(model, data, dataset, feature_map, args, ref_data=None):
     result_dialogs = []
     model.eval()
     with torch.no_grad():
-        qa_id = 0
-        for idx, dialog in enumerate(data["dialogs"]):
-            vid = dialog["image_id"]
-            out_dialog = dialog["dialog"][-1:]
-            pred_dialog = {"image_id": vid, "dialog": copy.deepcopy(out_dialog)}
-            result_dialogs.append(pred_dialog)
+        for index, instance in enumerate(dataset):
+            logging.info(f"{index}:")
+            logging.info("QS: " + instance["predict"])
+            # prepare input data
+            start_time = time.time()
 
-            vgg = np.load("data/vggish_testset/" + vid + ".npy")
-            i3d_flow = np.load("data/i3d_flow_testset/" + vid + ".npy")
-            i3d_rgb = np.load("data/i3d_rgb_testset/" + vid + ".npy")
-
-            sample_i3d_flow = i3d_flow[range(1, i3d_flow.shape[0], 1)]
-            sample_i3d_rgb = i3d_rgb[range(1, i3d_rgb.shape[0], 1)]
-
-            vgg = torch.from_numpy(vgg).float().cuda()
-            i3d_flow = torch.from_numpy(sample_i3d_flow).float().cuda()
-            i3d_rgb = torch.from_numpy(sample_i3d_rgb).float().cuda()
-            min_length = min([i3d_flow.size(0), i3d_rgb.size(0), vgg.size(0)])
-            i3d = torch.cat(
-                [i3d_flow[:min_length], i3d_rgb[:min_length], vgg[:min_length]], dim=1
-            ).unsqueeze(0)
-
-            for t, qa in enumerate(out_dialog):
-                logging.info("%d %s_%d" % (qa_id, vid, t))
-                logging.info("QS: " + qa["question"])
-                # prepare input data
-                start_time = time.time()
-                qa_id += 1
-
-                if args.beam_search:
-                    # hypstr = greedy_decode(dataset[idx]["caption"], dataset[idx]["history"], tokenizer, model, args, video=i3d)
-                    hypstr = beam_search(
-                        dataset[idx]["caption"],
-                        dataset[idx]["history"],
-                        tokenizer,
-                        model,
-                        args,
-                        video=i3d,
-                    )
-                    hypstr = hypstr[0][0]
-                else:
-                    hypstr = sample_sequence(
-                        dataset[idx]["caption"],
-                        dataset[idx]["history"],
-                        tokenizer,
-                        model,
-                        args,
-                        video=i3d,
-                    )
-                hypstr = tokenizer.decode(hypstr, skip_special_tokens=True)
-                logging.info("HYP: " + hypstr)
-                pred_dialog["dialog"][t]["answer"] = hypstr
-                logging.info("ElapsedTime: %f" % (time.time() - start_time))
-                logging.info("-----------------------")
-
-    return {"dialogs": result_dialogs}
+            if args.beam_search:
+                raise NotImplementedError("Beam search is not supported!")
+                hypstr = beam_search(
+                    dataset[idx]["caption"],
+                    dataset[idx]["history"],
+                    tokenizer,
+                    model,
+                    args,
+                    video=i3d,
+                )
+                hypstr = hypstr[0][0]
+            else:
+                hypstr = sample_sequence(
+                    instance,
+                    tokenizer,
+                    model,
+                    args,
+                    feature_map,
+                )
+            hypstr = tokenizer.decode(hypstr, skip_special_tokens=False)
+            logging.info("HYP: " + hypstr)
+            # Create an instance dictionary.
+            instance_result = {
+                "dialog_id": instance["dialog_id"],
+                "turn_id": instance["turn_id"],
+                "model_prediction": hypstr,
+                "type": instance["type"],
+            }
+            result_dialogs.append(instance_result)
+            logging.info("ElapsedTime: %f" % (time.time() - start_time))
+            logging.info("-----------------------")
+    return result_dialogs
 
 
 ##################################
@@ -304,6 +302,9 @@ if __name__ == "__main__":
         type=str,
         default="log_without_caption_with_valid/",
         help="Path, url or short name of the model",
+    )
+    parser.add_argument(
+        "--model_epoch", type=int, default=-1, help="Epoch to chose for a given folder"
     )
     parser.add_argument(
         "--max_history",
@@ -347,6 +348,15 @@ if __name__ == "__main__":
         "--temperature", type=int, default=0.7, help="Sampling softmax temperature"
     )
     parser.add_argument(
+        "--feature_width",
+        type=int,
+        default=10,
+        help="Number of vectors to represent each visual entry",
+    )
+    parser.add_argument(
+        "--feature_path", type=str, default="data/", help="Path to features"
+    )
+    parser.add_argument(
         "--top_k",
         type=int,
         default=0,
@@ -364,6 +374,12 @@ if __name__ == "__main__":
         type=str,
         default="data/lbl_undisclosedonly_test_set4DSTC7-AVSD.json",
     )
+    parser.add_argument(
+        "--special_tokens_path",
+        type=str,
+        required=True,
+        help="Path tp the special tokens used in training/evaluation",
+    )
     parser.add_argument("--output", type=str, default="result.json")
 
     args = parser.parse_args()
@@ -378,27 +394,42 @@ if __name__ == "__main__":
 
     tokenizer_class = GPT2Tokenizer if "gpt2" == args.model else OpenAIGPTTokenizer
     tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
-    tokenizer.add_special_tokens(SPECIAL_TOKENS_DICT)
+    with open(args.special_tokens_path, "r") as file_id:
+        special_tokens_dict = json.load(file_id)
+    tokenizer.add_special_tokens(special_tokens_dict)
+
     model_class = VideoGPT2LMHeadModel if "gpt2" == args.model else OpenAIGPTLMHeadModel
     model_config = GPT2Config.from_pretrained(args.model_checkpoint)
-    model = model_class.from_pretrained(
-        args.model_checkpoint + "checkpoint_mymodel_4.pth", config=model_config
-    )
+    if args.model_epoch:
+        model = model_class.from_pretrained(
+            args.model_checkpoint + f"checkpoint_mymodel_{args.model_epoch}.pth",
+            config=model_config,
+        )
+    else:
+        model = model_class.from_pretrained(args.model_checkpoint, config=model_config)
     model.to(args.device)
     model.eval()
 
     logging.info("Loading test data from " + args.test_set)
     test_data = json.load(open(args.test_set, "r"))
-    test_dataset = get_dataset(
-        tokenizer, args.test_set, undisclosed_only=True, n_history=args.max_history
+    test_dataset, feature_map = get_dataset(
+        tokenizer,
+        args.test_set,
+        args.feature_path,
+        args.feature_width,
     )
     # generate sentences
     logging.info("-----------------------generate--------------------------")
     start_time = time.time()
-    result = generate_response(model, test_data, test_dataset, args)
+    results = generate_response(model, test_data, test_dataset, feature_map, args)
     logging.info("----------------")
     logging.info("wall time = %f" % (time.time() - start_time))
+
+    # Split API prediction and DST + Coreference output files.
+    api_results_json, dst_results_json = create_result_jsons(results, test_data)
+
     if args.output:
         logging.info("writing results to " + args.output)
-        json.dump(result, open(args.output, "w"), indent=4)
+        with open(args.output, "w") as file_id:
+            json.dump(results, file_id)
     logging.info("done")

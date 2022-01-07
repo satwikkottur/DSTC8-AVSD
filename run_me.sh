@@ -10,14 +10,31 @@ FOLDER="avsd8"
 FOLDER="memory_dialog"
 
 # Memory Dialog.
+CUDA_VISIBLE_DEVICES=1 \
+python train.py --log_path logs/memory_train_v1_50ep/ \
+    --train_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_train.json" \
+    --valid_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_dev.json" \
+    --special_tokens_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_special_tokens.json" \
+    --feature_path "data/$FOLDER/memory_features/butd_10w_features" \
+    --train_batch_size 8 \
+    --predict_belief_state \
+    --n_epochs 10
+    # --dataloader_dry_run
+
+        # --test_set "data/$FOLDER/gpt2_data/mem_dials_gpt2_devtest.json" \
 # CUDA_VISIBLE_DEVICES=1 \
-# python train.py --log_path log \
-#     --train_path "data/$FOLDER/final_data/mem_dials_dev.json" \
-#     --valid_path "data/$FOLDER/final_data/mem_dials_dev.json" \
-#     --feature_path "data/$FOLDER/"\
-#     --train_batch_size 2 \
-#     --predict_belief_state \
-#     --video_agnostic
+#     python generate.py \
+#         --model_checkpoint logs/memory_train_v1/ \
+#         --model_epoch 6 \
+#         --test_set "data/$FOLDER/gpt2_data/mem_dials_gpt2_devtest.json" \
+#         --special_tokens_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_special_tokens.json" \
+#         --feature_path "data/$FOLDER/memory_features/butd_10w_features" \
+#         --output result.json \
+
+
+# python utils/create_result_jsons.py \
+#     --memory_test_json "data/memory_dialog/final_data/mem_dials_devtest.json" \
+#     --model_output_json "result_sample.json"
 
 
 DATA_PATH="data/$FOLDER/final_data"
@@ -41,9 +58,9 @@ FEATURE_PATH="data/visdial_img_feat.lmdb"
 #     --valid_path "data/$FOLDER/valid_set4DSTC7-AVSD.json" \
 #     --fea_path "data/$FOLDER"
 
-python utils/preprocess_memory_dataset.py \
-    --train_json_path "data/$FOLDER/final_data/mem_dials_train.json" \
-    --unseen_json_path \
-        "data/$FOLDER/final_data/mem_dials_dev.json" \
-        "data/$FOLDER/final_data/mem_dials_devtest.json" \
-    --save_folder "data/$FOLDER/gpt2_data/"
+# python utils/preprocess_memory_dataset.py \
+#     --train_json_path "data/$FOLDER/final_data/mem_dials_train.json" \
+#     --unseen_json_path \
+#         "data/$FOLDER/final_data/mem_dials_dev.json" \
+#         "data/$FOLDER/final_data/mem_dials_devtest.json" \
+#     --save_folder "data/$FOLDER/gpt2_data/"

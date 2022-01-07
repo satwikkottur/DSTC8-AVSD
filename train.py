@@ -1,5 +1,6 @@
 # Copyright (c) 2019-present, HuggingFace Inc.
 # All rights reserved. This source code is licensed under the BSD-style license found in the LICENSE file in the root directory of this source tree.
+import json
 import logging
 import math
 import os
@@ -24,23 +25,8 @@ from transformers import *
 from VideoGPT2 import *
 import pickle as pkl
 
-from dataset_memory import collate_fn, get_dataset, MemoryDialogDataset
+from dataset_memory import collate_fn, get_dataset, MemoryDialogDataset, padding
 
-SPECIAL_TOKENS = [
-    "<bos>",
-    "<eos>",
-    "<speaker1>",
-    "<speaker2>",
-    "<cap>",
-    "<video>",
-    "<pad>",
-]
-SPECIAL_TOKENS_DICT = {
-    "bos_token": "<bos>",
-    "eos_token": "<eos>",
-    "additional_special_tokens": ["<speaker1>", "<speaker2>", "<video>", "<cap>"],
-    "pad_token": "<pad>",
-}
 MODEL_INPUTS = ["input_ids", "token_type_ids", "lm_labels"]
 PADDED_INPUTS = ["input_ids", "token_type_ids", "lm_labels"]
 
@@ -64,8 +50,7 @@ def get_data_loaders_new(args, tokenizer):
         tokenizer,
         args.train_path,
         args.feature_path,
-        n_history=args.max_history,
-        predict_belief_state=args.predict_belief_state,
+        args.feature_width,
     )
     # with open("train_data_gpt2.pkl", "rb") as f:
     #    train_data = pkl.load(f)
@@ -74,8 +59,7 @@ def get_data_loaders_new(args, tokenizer):
         tokenizer,
         args.valid_path,
         args.feature_path,
-        n_history=args.max_history,
-        predict_belief_state=args.predict_belief_state,
+        args.feature_width,
     )
     # with open("valid_data_gpt2.pkl", "rb") as f:
     #    valid_data = pkl.load(f)
@@ -94,7 +78,14 @@ def get_data_loaders_new(args, tokenizer):
         drop_rate=0,
         train=False,
     )
-    features = None if args.video_agnostic else True
+    # for ii in range(len(train_dataset)):
+    #    train_dataset[ii]
+    # batch = [train_dataset[ii] for ii in range(3)]
+    # features = True
+    # collate_fn(batch, tokenizer.pad_token_id, features=features)
+    # NOTE: FIX this later.
+    # features = None if args.video_agnostic else True
+    features = True
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.train_batch_size,
@@ -130,6 +121,12 @@ def train():
         help="Path of the validset",
     )
     parser.add_argument(
+        "--special_tokens_path",
+        type=str,
+        required=True,
+        help="Path to the special tokens for training",
+    )
+    parser.add_argument(
         "--model_checkpoint",
         type=str,
         default="gpt2",
@@ -140,6 +137,12 @@ def train():
         type=int,
         default=3,
         help="Number of previous exchanges to keep in history",
+    )
+    parser.add_argument(
+        "--feature_width",
+        type=int,
+        default=10,
+        help="Number of vectors to represent each visual entry",
     )
     parser.add_argument(
         "--train_batch_size", type=int, default=4, help="Batch size for training"
@@ -167,6 +170,11 @@ def train():
         "--eval_before_start",
         action="store_true",
         help="If true start with a first evaluation before training",
+    )
+    parser.add_argument(
+        "--dataloader_dry_run",
+        action="store_true",
+        help="Flag to set only dataloader components",
     )
     parser.add_argument(
         "--video_agnostic",
@@ -220,14 +228,20 @@ def train():
     )
     tokenizer_class = GPT2Tokenizer
     tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
-    model_class = VideoGPT2LMHeadModel
-    model = model_class.from_pretrained(args.model_checkpoint)
-    tokenizer.add_special_tokens(SPECIAL_TOKENS_DICT)
-    model.resize_token_embeddings(len(tokenizer))
-    model.to(args.device)
-    optimizer = AdamW(model.parameters(), lr=args.lr)
+    # Read special tokens from the file.
+    with open(args.special_tokens_path, "r") as file_id:
+        special_tokens_dict = json.load(file_id)
+    tokenizer.add_special_tokens(special_tokens_dict)
 
-    # Prepare model for FP16 and distributed training if needed (order is important, distributed should be the last)
+    if not args.dataloader_dry_run:
+        model_class = VideoGPT2LMHeadModel
+        model = model_class.from_pretrained(args.model_checkpoint)
+        model.resize_token_embeddings(len(tokenizer))
+        model.to(args.device)
+        optimizer = AdamW(model.parameters(), lr=args.lr)
+
+    # Prepare model for FP16 and distributed training if needed
+    # (order is important, distributed should be the last)
     if args.fp16:
         from apex import amp  # Apex is only required if we use fp16 training
 
@@ -243,87 +257,45 @@ def train():
     # Training function and trainer
     def update(engine, batch):
         model.train()
-        batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
-        if args.video_agnostic:
-            # Run text only version.
-            (
-                input_ids,
-                token_type_ids,
-                labels,
-                input_mask,
-                reply_mask,
-            ) = batch
-            input_embs = model.transformer.wte(input_ids)
-            reply_loss = model(
-                input_embs,
-                token_type_ids=token_type_ids,
-                labels=(labels, None),
-                attention_mask=[reply_mask, input_mask],
-                mode="reply",
-            )[0]
-            loss = reply_loss / args.gradient_accumulation_steps
-            if args.fp16:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    amp.master_params(optimizer), args.max_norm
-                )
-            else:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-            if engine.state.iteration % args.gradient_accumulation_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-            return loss.item()
+        # Process the input_tokens for the batch.
+        input_embeds = []
+        for datum in batch[0]:
+            instance_embeds = []
+            for datum_input in datum:
+                if isinstance(datum_input, dict):
+                    datum_output = model.video_ff(
+                        torch.Tensor(datum_input["features"]).to(args.device)
+                    )
+                else:
+                    datum_output = model.transformer.wte(datum_input.to(args.device))
+                instance_embeds.append(datum_output)
+            input_embeds.append(torch.cat(instance_embeds))
+        input_embeds, _ = padding(input_embeds, tokenizer.pad_token_id)
+        token_type_ids = batch[1].to(args.device)
+        lm_labels = batch[2].to(args.device)
+        input_mask = batch[3].to(args.device)
+        reply_mask = torch.zeros(
+            input_mask.size(), dtype=input_mask.dtype, device=input_mask.device
+        )
+        reply_loss = model(
+            input_embeds,
+            token_type_ids=token_type_ids,
+            labels=(lm_labels, None),
+            attention_mask=[reply_mask, input_mask],
+            mode="reply",
+        )[0]
+        loss = reply_loss / args.gradient_accumulation_steps
+        if args.fp16:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+            torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_norm)
         else:
-            (
-                input_ids,
-                token_type_ids,
-                labels,
-                input_mask,
-                i3d,
-                video_mask,
-                reply_mask,
-            ) = batch
-            input_embs = model.transformer.wte(input_ids)
-            video_embs = model.video_ff(i3d)
-            input_embs = torch.cat([video_embs, input_embs], dim=1)
-            token_type_ids = torch.cat(
-                [
-                    torch.ones((i3d.size(0), i3d.size(1))).long().cuda()
-                    * tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-2]),
-                    token_type_ids,
-                ],
-                dim=1,
-            )
-            video_loss = model(
-                input_embs,
-                token_type_ids=token_type_ids,
-                labels=(labels, i3d),
-                attention_mask=[video_mask, input_mask],
-                mode="video",
-            )[0]
-            reply_loss = model(
-                input_embs,
-                token_type_ids=token_type_ids,
-                labels=(labels, i3d),
-                attention_mask=[reply_mask, input_mask],
-                mode="reply",
-            )[0]
-            loss = (video_loss + reply_loss) / args.gradient_accumulation_steps
-            if args.fp16:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    amp.master_params(optimizer), args.max_norm
-                )
-            else:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-            if engine.state.iteration % args.gradient_accumulation_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-            return loss.item()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+        if engine.state.iteration % args.gradient_accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+        return loss.item()
 
     trainer = Engine(update)
 
@@ -331,61 +303,41 @@ def train():
     def inference(engine, batch):
         model.eval()
         with torch.no_grad():
-            batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
-            if args.video_agnostic:
-                (
-                    input_ids,
-                    token_type_ids,
-                    lm_labels,
-                    input_mask,
-                    reply_mask,
-                ) = batch
-                input_embs = model.transformer.wte(input_ids)
-                model_outputs = model(
-                    input_embs,
-                    token_type_ids=token_type_ids,
-                    attention_mask=[reply_mask, input_mask],
-                )[0]
+            # Process the input_tokens for the batch.
+            input_embeds = []
+            for datum in batch[0]:
+                instance_embeds = []
+                for datum_input in datum:
+                    if isinstance(datum_input, dict):
+                        datum_output = model.video_ff(
+                            torch.Tensor(datum_input["features"]).to(args.device)
+                        )
+                    else:
+                        datum_output = model.transformer.wte(
+                            datum_input.to(args.device)
+                        )
+                    instance_embeds.append(datum_output)
+                input_embeds.append(torch.cat(instance_embeds))
+            input_embeds, _ = padding(input_embeds, tokenizer.pad_token_id)
+            token_type_ids = batch[1].to(args.device)
+            lm_labels = batch[2].to(args.device)
+            input_mask = batch[3].to(args.device)
+            reply_mask = torch.zeros(
+                input_mask.size(), dtype=input_mask.dtype, device=input_mask.device
+            )
+            model_outputs = model(
+                input_embeds,
+                token_type_ids=token_type_ids,
+                attention_mask=[reply_mask, input_mask],
+                mode="reply",
+            )[0]
 
-                lm_logits = model_outputs  # So we can also use GPT2 outputs
-                lm_logits_flat_shifted = (
-                    lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
-                )
-                lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
-                return lm_logits_flat_shifted, lm_labels_flat_shifted
-            else:
-                (
-                    input_ids,
-                    token_type_ids,
-                    lm_labels,
-                    input_mask,
-                    i3d,
-                    video_mask,
-                    reply_mask,
-                ) = batch
-                input_embs = model.transformer.wte(input_ids)
-                video_embs = model.video_ff(i3d)
-                input_embs = torch.cat([video_embs, input_embs], dim=1)
-                token_type_ids = torch.cat(
-                    [
-                        torch.ones((i3d.size(0), i3d.size(1))).long().cuda()
-                        * tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-2]),
-                        token_type_ids,
-                    ],
-                    dim=1,
-                )
-                model_outputs = model(
-                    input_embs,
-                    token_type_ids=token_type_ids,
-                    attention_mask=[reply_mask, input_mask],
-                )[0]
-
-                lm_logits = model_outputs  # So we can also use GPT2 outputs
-                lm_logits_flat_shifted = (
-                    lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
-                )
-                lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
-                return lm_logits_flat_shifted, lm_labels_flat_shifted
+            lm_logits = model_outputs  # So we can also use GPT2 outputs
+            lm_logits_flat_shifted = (
+                lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
+            )
+            lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
+            return lm_logits_flat_shifted, lm_labels_flat_shifted
 
     evaluator = Engine(inference)
 
