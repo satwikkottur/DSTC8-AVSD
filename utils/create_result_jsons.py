@@ -11,7 +11,61 @@ import collections
 import copy
 import json
 
-from utils import convert
+
+def parse_flattened_result(to_parse):
+    """
+        Parse out the belief state from the raw text.
+        Return an empty list if the belief state can't be parsed
+
+        Input:
+        - A single <str> of flattened result
+          e.g. 'User: Show me something else => Belief State : DA:REQUEST ...'
+
+        Output:
+        - Parsed result in a JSON format, where the format is:
+            [
+                {
+                    'act': <str>  # e.g. 'DA:REQUEST',
+                    'slots': [
+                        <str> slot_name,
+                        <str> slot_value
+                    ]
+                }, ...  # End of a frame
+            ]  # End of a dialog
+    """
+    dialog_act_regex = re.compile(r'([\w:?.?]*) *\[(.*)\] *\(([^\]]*)\) *\<([^\]]*)\>')
+    slot_regex = re.compile(r'([A-Za-z0-9_.-:]*) *= ([^,]*)')
+    request_regex = re.compile(r'([A-Za-z0-9_.-:]+)')
+    object_regex = re.compile(r'([A-Za-z0-9]+)')
+
+    belief = []
+
+    # Parse
+    to_parse = to_parse.strip()
+    # to_parse: 'DIALOG_ACT_1 : [ SLOT_NAME = SLOT_VALUE, ... ] ...'
+    for dialog_act in dialog_act_regex.finditer(to_parse):
+        d = {
+            'act': dialog_act.group(1),
+            'slots': [],
+            'request_slots': [],
+            'memories': []
+        }
+
+        for slot in slot_regex.finditer(dialog_act.group(2)):
+            d['slots'].append(
+                [
+                    slot.group(1).strip(),
+                    slot.group(2).strip()
+                ]
+            )
+
+        for request_slot in request_regex.finditer(dialog_act.group(3)):
+            d['request_slots'].append(request_slot.group(1).strip())
+        for object_id in object_regex.finditer(dialog_act.group(4)):
+            d['memories'].append(object_id.group(1).strip())
+        if d != {}:
+            belief.append(d)
+    return belief
 
 
 def create_result_jsons(results, test_data):
@@ -56,7 +110,7 @@ def create_result_jsons(results, test_data):
             if index in dst_pool:
                 model_pred_datum = dst_pool[index]
                 model_pred = model_pred_datum["model_prediction"].strip(" ")
-                parsed_result = convert.parse_flattened_result(model_pred)
+                parsed_result = parse_flattened_result(model_pred)
                 datum["system_transcript_annotated"] = parsed_result
             else:
                 print("Missing!")

@@ -10,15 +10,15 @@ FOLDER="avsd8"
 FOLDER="memory_dialog"
 
 # Memory Dialog.
-CUDA_VISIBLE_DEVICES=1 \
-python train.py --log_path logs/memory_train_v1_50ep/ \
-    --train_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_train.json" \
-    --valid_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_dev.json" \
-    --special_tokens_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_special_tokens.json" \
-    --feature_path "data/$FOLDER/memory_features/butd_10w_features" \
-    --train_batch_size 8 \
-    --predict_belief_state \
-    --n_epochs 10
+# CUDA_VISIBLE_DEVICES=1 \
+# python train.py --log_path logs/memory_train_v1_50ep/ \
+#     --train_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_train.json" \
+#     --valid_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_dev.json" \
+#     --special_tokens_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_special_tokens.json" \
+#     --feature_path "data/$FOLDER/memory_features/butd_10w_features" \
+#     --train_batch_size 8 \
+#     --predict_belief_state \
+#     --n_epochs 10
     # --dataloader_dry_run
 
         # --test_set "data/$FOLDER/gpt2_data/mem_dials_gpt2_devtest.json" \
@@ -29,7 +29,7 @@ python train.py --log_path logs/memory_train_v1_50ep/ \
 #         --test_set "data/$FOLDER/gpt2_data/mem_dials_gpt2_devtest.json" \
 #         --special_tokens_path "data/$FOLDER/gpt2_data/mem_dials_gpt2_special_tokens.json" \
 #         --feature_path "data/$FOLDER/memory_features/butd_10w_features" \
-#         --output result.json \
+#         --output model_v1_ep6_devtest_results.json \
 
 
 # python utils/create_result_jsons.py \
