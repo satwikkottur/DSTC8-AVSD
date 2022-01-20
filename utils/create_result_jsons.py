@@ -10,6 +10,7 @@ import argparse
 import collections
 import copy
 import json
+import re
 
 
 def parse_flattened_result(to_parse):
@@ -100,6 +101,8 @@ def create_result_jsons(results, test_data):
                     "response": instance["model_prediction"],
                 }
             )
+    num_missing = 0
+    num_present = 0
     for dialog_datum in dst_results["dialogue_data"]:
         del dialog_datum["mentioned_memory_ids"]
         del dialog_datum["memory_graph_id"]
@@ -111,9 +114,13 @@ def create_result_jsons(results, test_data):
                 model_pred_datum = dst_pool[index]
                 model_pred = model_pred_datum["model_prediction"].strip(" ")
                 parsed_result = parse_flattened_result(model_pred)
-                datum["system_transcript_annotated"] = parsed_result
+                datum["transcript_annotated"] = parsed_result
+                num_present += 1
             else:
-                print("Missing!")
+                del datum["transcript_annotated"]
+                print(f"Missing! -- {index}")
+                num_missing += 1
+    print(f"Missing: {num_missing} Present: {num_present}")
     return list(response_results.values()), dst_results
 
 

@@ -34,7 +34,9 @@ FOLDER="memory_dialog"
 
 # python utils/create_result_jsons.py \
 #     --memory_test_json "data/memory_dialog/final_data/mem_dials_devtest.json" \
-#     --model_output_json "result_sample.json"
+#     --model_output_json "results/model_v1_ep6_devtest_results.json"
+    # --model_output_json "result_sample.json"
+    
 
 
 DATA_PATH="data/$FOLDER/final_data"
@@ -64,3 +66,12 @@ FEATURE_PATH="data/visdial_img_feat.lmdb"
 #         "data/$FOLDER/final_data/mem_dials_dev.json" \
 #         "data/$FOLDER/final_data/mem_dials_devtest.json" \
 #     --save_folder "data/$FOLDER/gpt2_data/"
+
+python utils/analyze_memory_splits.py \
+    --input_train_json "data/$FOLDER/final_data/mem_dials_train.json" \
+    --input_dev_json "data/$FOLDER/final_data/mem_dials_dev.json" \
+    --input_devtest_json "data/$FOLDER/final_data/mem_dials_devtest.json" \
+    --input_test_json "data/$FOLDER/final_data/mem_dials_test.json" \
+    --gpt_train_json "data/$FOLDER/gpt2_data/mem_dials_gpt2_train.json" \
+    --gpt_dev_json "data/$FOLDER/gpt2_data/mem_dials_gpt2_dev.json" \
+    --gpt_devtest_json "data/$FOLDER/gpt2_data/mem_dials_gpt2_devtest.json"

@@ -11,6 +11,7 @@ import numpy as np
 
 import torch
 import torch.nn.functional as F
+import tqdm
 
 from transformers import *
 from VideoGPT2 import *
@@ -250,9 +251,10 @@ def generate_response(model, data, dataset, feature_map, args, ref_data=None):
     result_dialogs = []
     model.eval()
     with torch.no_grad():
-        for index, instance in enumerate(dataset):
-            logging.info(f"{index}:")
-            logging.info("QS: " + instance["predict"])
+        iterator = tqdm.tqdm(enumerate(dataset), desc="Generating responses")
+        for index, instance in iterator:
+            # logging.info(f"{index}:")
+            # logging.info("QS: " + instance["predict"])
             # prepare input data
             start_time = time.time()
 
@@ -276,7 +278,7 @@ def generate_response(model, data, dataset, feature_map, args, ref_data=None):
                     feature_map,
                 )
             hypstr = tokenizer.decode(hypstr, skip_special_tokens=False)
-            logging.info("HYP: " + hypstr)
+            # logging.info("HYP: " + hypstr)
             # Create an instance dictionary.
             instance_result = {
                 "dialog_id": instance["dialog_id"],
@@ -285,8 +287,8 @@ def generate_response(model, data, dataset, feature_map, args, ref_data=None):
                 "type": instance["type"],
             }
             result_dialogs.append(instance_result)
-            logging.info("ElapsedTime: %f" % (time.time() - start_time))
-            logging.info("-----------------------")
+            # logging.info("ElapsedTime: %f" % (time.time() - start_time))
+            # logging.info("-----------------------")
     return result_dialogs
 
 
@@ -424,9 +426,6 @@ if __name__ == "__main__":
     results = generate_response(model, test_data, test_dataset, feature_map, args)
     logging.info("----------------")
     logging.info("wall time = %f" % (time.time() - start_time))
-
-    # Split API prediction and DST + Coreference output files.
-    api_results_json, dst_results_json = create_result_jsons(results, test_data)
 
     if args.output:
         logging.info("writing results to " + args.output)
