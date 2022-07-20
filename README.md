@@ -67,6 +67,3 @@ If you use this code in your research, you can cite our AAAI2020 DSTC8 workshop 
     primaryClass={cs.CL}
 }
 ```
-
-
-

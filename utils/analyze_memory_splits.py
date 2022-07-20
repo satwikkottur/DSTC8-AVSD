@@ -10,7 +10,7 @@ import json
 
 
 def main(args):
-    splits = ["train", "dev", "devtest", "test"]
+    splits = ["train", "val", "test"]
     memory_data = {}
     for split in splits:
         with open(args[f"input_{split}_json"], "r") as file_id:
@@ -22,7 +22,7 @@ def main(args):
         print(f"{split}:")
         print(f"\t# dialogs {num_dialogs}\n\t# utterances: {num_utterances}")
 
-    splits = ["train", "dev", "devtest"]
+    splits = ["train", "val", "test"]
     gpt_data = {}
     for split in splits:
         with open(args[f"gpt_{split}_json"], "r") as file_id:
@@ -43,15 +43,15 @@ if __name__ == "__main__":
         help="JSON Input train",
     )
     parser.add_argument(
-        "--input_dev_json",
+        "--input_val_json",
         required=True,
-        help="JSON Input dev",
+        help="JSON Input val",
     )
-    parser.add_argument(
-        "--input_devtest_json",
-        required=True,
-        help="JSON Input devtest",
-    )
+    # parser.add_argument(
+    #     "--input_devtest_json",
+    #     required=True,
+    #     help="JSON Input devtest",
+    # )
     parser.add_argument(
         "--input_test_json",
         required=True,
@@ -63,18 +63,18 @@ if __name__ == "__main__":
         help="JSON Input train",
     )
     parser.add_argument(
-        "--gpt_dev_json",
+        "--gpt_val_json",
         required=True,
-        help="JSON Input dev",
-    )
-    parser.add_argument(
-        "--gpt_devtest_json",
-        required=True,
-        help="JSON Input devtest",
+        help="JSON Input val",
     )
     # parser.add_argument(
-    #     "--gpt_test_json", required=True, help="JSON Input test",
+    #     "--gpt_devtest_json",
+    #     required=True,
+    #     help="JSON Input devtest",
     # )
+    parser.add_argument(
+        "--gpt_test_json", required=True, help="JSON Input test",
+    )
     try:
         parsed_args = vars(parser.parse_args())
     except (IOError) as msg:
